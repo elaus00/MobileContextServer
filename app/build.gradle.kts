@@ -65,6 +65,20 @@ android {
     buildFeatures {
         compose = true
     }
+    
+    packaging {
+        resources {
+            excludes += "/META-INF/DEPENDENCIES"
+            excludes += "/META-INF/LICENSE"
+            excludes += "/META-INF/LICENSE.txt"
+            excludes += "/META-INF/license.txt"
+            excludes += "/META-INF/NOTICE"
+            excludes += "/META-INF/NOTICE.txt"
+            excludes += "/META-INF/notice.txt"
+            excludes += "/META-INF/ASL2.0"
+            excludes += "/META-INF/*.kotlin_module"
+        }
+    }
 }
 
 chaquopy {
@@ -89,6 +103,16 @@ chaquopy {
     }
 }
 
+// 종속성 충돌 해결을 위한 설정
+configurations.all {
+    resolutionStrategy {
+        // 오류를 발생시키는 HTTP 클라이언트 라이브러리 강제 버전 지정
+        force("org.apache.httpcomponents.client5:httpclient5:5.3.1")
+        force("org.apache.httpcomponents.core5:httpcore5:5.2.4")
+        force("org.apache.httpcomponents.core5:httpcore5-h2:5.2.4")
+    }
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -106,7 +130,20 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
     implementation(libs.androidx.appcompat)
+    implementation(libs.slf4j.nop)
 
+    // MCP 관련 의존성
+    implementation("io.modelcontextprotocol:kotlin-sdk:0.4.0")
+    implementation(libs.anthropic.java)
+
+    // 비동기 처리 관련 라이브러리
+    implementation(libs.kotlinx.coroutines.android)
+    implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.androidx.lifecycle.runtime.ktx.v270)
+
+    // 채팅 UI 라이브러리
+    implementation(libs.androidx.runtime.livedata)
+    
     // HTTP 클라이언트 의존성 (OkHttp 또는 Ktor 사용)
     implementation(libs.okhttp)
     implementation(libs.okhttp.sse)
@@ -120,6 +157,11 @@ dependencies {
     implementation(libs.ktor.client.logging)
     implementation(libs.ktor.client.plugins)
     implementation(libs.jackson.module.kotlin)
+
+    // HTTP 관련 라이브러리 - 충돌을 유발하는 패키지는 runtimeOnly로 변경
+    runtimeOnly(libs.httpclient5)
+    runtimeOnly(libs.httpcore5)
+    runtimeOnly(libs.httpcore5.h2)
 
     // Jackson Kotlin 모듈 추가
     implementation(libs.jackson.module.kotlin)

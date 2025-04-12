@@ -13,4 +13,4 @@
 .externalNativeBuild
 .cxx
 local.properties
-/app/src/main/assets/servers/mcp-server/node_modules/qs
+/app/src/main/assets/servers
