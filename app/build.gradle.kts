@@ -129,17 +129,20 @@ dependencies {
     implementation(libs.jackson.datatype.jsr310)
 }
 
-// Node 패키지 추가하는 태스크
-tasks.register("installNodeModules") {
+// 서버 디렉토리의 패키지 설치를 위한 태스크 (필요시 수동 실행)
+tasks.register("installServerModules") {
     doLast {
-        project.exec {
-            workingDir = file("src/main/assets/nodejs-project")
-            commandLine("npm", "install", "--production")
-        }
-
-        project.exec {
-            workingDir = file("src/main/assets/nodejs-project")
-            commandLine("npx", "esbuild", "--bundle", "index.js", "--outfile=bundle.js", "--platform=node")
+        // 모든 서버 디렉토리 찾기
+        val serversDir = file("src/main/assets/servers")
+        serversDir.listFiles()?.filter { it.isDirectory }?.forEach { serverDir ->
+            // 각 서버 디렉토리에서 npm install 실행
+            if (file("${serverDir.absolutePath}/package.json").exists()) {
+                println("Installing node modules for ${serverDir.name}...")
+                project.exec {
+                    workingDir = serverDir
+                    commandLine("npm", "install", "--production")
+                }
+            }
         }
     }
 }
@@ -153,6 +156,7 @@ tasks.register("createNativeDirectories") {
         mkdir("src/main/jniLibs/armeabi-v7a")
         mkdir("src/main/jniLibs/x86_64")
         mkdir("src/main/cpp")
+        mkdir("src/main/assets/servers")
 
         // CMakeLists.txt 생성
         val cmakeFile = file("src/main/cpp/CMakeLists.txt")
@@ -191,28 +195,6 @@ tasks.register("createNativeDirectories") {
                     // 임시 구현 - 나중에 node.h가 있을 때 완성
                     return 0;
                 }
-            """.trimIndent())
-        }
-
-        // nodejs-project 디렉토리 및 main.js 생성
-        mkdir("src/main/assets/nodejs-project")
-        val mainJsFile = file("src/main/assets/nodejs-project/main.js")
-        if (!mainJsFile.exists()) {
-            mainJsFile.writeText("""
-                // 간단한 HTTP 서버
-                const http = require('http');
-                
-                const server = http.createServer((req, res) => {
-                  res.writeHead(200, {'Content-Type': 'application/json'});
-                  res.end(JSON.stringify({
-                    message: 'Node.js 서버가 작동 중입니다!',
-                    timestamp: new Date().toISOString()
-                  }));
-                });
-                
-                server.listen(3000, '127.0.0.1', () => {
-                  console.log('서버가 http://127.0.0.1:3000 에서 실행 중입니다');
-                });
             """.trimIndent())
         }
     }

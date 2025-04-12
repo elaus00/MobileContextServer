@@ -5,7 +5,10 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -41,46 +44,91 @@ class MainActivity : ComponentActivity() {
         var nodeStarted = false
     }
 
+    // 사용 가능한 서버 목록 (assets/servers 디렉토리에서 자동으로 로드됨)
+    private var availableServers = mutableListOf<String>()
+    private var selectedServer = mutableStateOf<String?>(null)
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // 사용 가능한 서버 목록 로드
+        loadAvailableServers()
+        
         setContent {
             MaterialTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ServerScreen(
-                        onStartNode = {
-                            if (!nodeStarted) {
-                                startNodeJS()
-                                nodeStarted = true // 시작 시도 시 일단 true로 설정 (결과에 따라 변경됨)
+                    if (selectedServer.value == null) {
+                        // 서버 선택 화면 표시
+                        ServerSelectionScreen(
+                            availableServers = availableServers,
+                            onServerSelected = { serverName ->
+                                selectedServer.value = serverName
                             }
-                        },
-                        onStartLocalServer = {
-                            if (!localServerStarted) {
-                                startLocalServer()
-                                // localServerStarted = true // LocalHttpServer 내부 콜백에서 설정되도록 변경 가능
-                            }
-                        },
-                        onStopLocalServer = {
-                            stopLocalServer()
-                            localServerStarted = false
-                        },
-                        onTestServer = { testNodeServer() },
-                        isNodeStarted = nodeStarted,
-                        isLocalServerStarted = localServerStarted
-                    )
+                        )
+                    } else {
+                        // 선택된 서버의 제어 화면 표시
+                        ServerScreen(
+                            serverName = selectedServer.value!!,
+                            onStartNode = {
+                                if (!nodeStarted) {
+                                    startNodeJS(selectedServer.value!!)
+                                    nodeStarted = true // 시작 시도 시 일단 true로 설정 (결과에 따라 변경됨)
+                                }
+                            },
+                            onStartLocalServer = {
+                                if (!localServerStarted) {
+                                    startLocalServer()
+                                    // localServerStarted = true // LocalHttpServer 내부 콜백에서 설정되도록 변경 가능
+                                }
+                            },
+                            onStopLocalServer = {
+                                stopLocalServer()
+                                localServerStarted = false
+                            },
+                            onTestServer = { testNodeServer() },
+                            onChangeServer = {
+                                if (!nodeStarted && !localServerStarted) {
+                                    selectedServer.value = null
+                                } else {
+                                    _responseText.value = "서버를 중지한 후 다른 서버를 선택해주세요."
+                                }
+                            },
+                            isNodeStarted = nodeStarted,
+                            isLocalServerStarted = localServerStarted
+                        )
+                    }
                 }
             }
         }
     }
 
-    private fun startNodeJS() {
+    private fun loadAvailableServers() {
+        try {
+            // assets/servers 디렉토리에서 서버 목록 읽기
+            val servers = assets.list("servers") ?: emptyArray()
+            availableServers.clear()
+            availableServers.addAll(servers.toList())
+
+            Log.d("Servers", "로드된 서버 목록: ${availableServers.joinToString(", ")}")
+            
+            if (availableServers.isEmpty()) {
+                Log.e("Servers", "서버 목록이 비어있습니다. assets/servers 폴더에 서버 디렉토리를 추가해주세요.")
+            }
+        } catch (e: Exception) {
+            Log.e("Servers", "서버 목록 로드 중 오류", e)
+            availableServers.clear()
+        }
+    }
+    
+    private fun startNodeJS(serverName: String) {
         thread {
             try {
-                val nodeDir = copyAndVerifyNodeProject()
+                val nodeDir = copyAndVerifyNodeProject(serverName)
                 if (nodeDir == null) {
-                    handleError("Node.js 프로젝트 파일 복사 실패")
+                    handleError("$serverName 프로젝트 파일 복사 실패")
                     return@thread
                 }
 
@@ -103,10 +151,10 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun copyAndVerifyNodeProject(): String? {
-        val nodeDir = "${applicationContext.filesDir.absolutePath}/nodejs-project"
+    private fun copyAndVerifyNodeProject(serverName: String): String? {
+        val nodeDir = "${applicationContext.filesDir.absolutePath}/$serverName"
         try {
-            Log.d("NodeJS", "Node.js 프로젝트 복사 시작: $nodeDir")
+            Log.d("NodeJS", "$serverName 프로젝트 복사 시작: $nodeDir")
 
             // 기존 디렉토리 삭제 후 새로 생성
             File(nodeDir).apply {
@@ -114,9 +162,12 @@ class MainActivity : ComponentActivity() {
                 mkdirs()
             }
 
+            // 소스 경로 결정
+            val sourceAssetPath = "servers/$serverName"
+            
             // 파일 복사
-            if (!copyAssetFolder("nodejs-project", nodeDir)) {
-                Log.e("NodeJS", "프로젝트 파일 복사 실패")
+            if (!copyAssetFolder(sourceAssetPath, nodeDir)) {
+                Log.e("NodeJS", "$serverName 프로젝트 파일 복사 실패")
                 return null
             }
 
@@ -306,11 +357,56 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+fun ServerSelectionScreen(
+    availableServers: List<String>,
+    onServerSelected: (String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "사용할 서버를 선택해주세요",
+            style = MaterialTheme.typography.headlineMedium,
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
+        
+        LazyColumn(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth()
+        ) {
+            items(availableServers) { serverName ->
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(8.dp)
+                        .clickable { onServerSelected(serverName) },
+                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = serverName,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 fun ServerScreen(
+    serverName: String,
     onStartNode: () -> Unit,
     onStartLocalServer: () -> Unit,
     onStopLocalServer: () -> Unit,
     onTestServer: () -> Unit,
+    onChangeServer: () -> Unit,
     isNodeStarted: Boolean,
     isLocalServerStarted: Boolean
 ) {
@@ -326,6 +422,12 @@ fun ServerScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        Text(
+            text = "서버: $serverName",
+            style = MaterialTheme.typography.titleLarge,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
+        
         Text(
             text = if (isNodeStarted) {
                 "Node.js 서버가 실행 중입니다"
@@ -372,12 +474,25 @@ fun ServerScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // 테스트 버튼
-        Button(
-            onClick = onTestServer,
-            enabled = isNodeStarted || isLocalServerStarted
+        Row(
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text("서버 테스트")
+            // 테스트 버튼
+            Button(
+                onClick = onTestServer,
+                enabled = isNodeStarted || isLocalServerStarted
+            ) {
+                Text("서버 테스트")
+            }
+            
+            Spacer(modifier = Modifier.width(8.dp))
+            
+            // 서버 변경 버튼
+            Button(
+                onClick = onChangeServer
+            ) {
+                Text("서버 변경")
+            }
         }
 
         Spacer(modifier = Modifier.height(16.dp))
