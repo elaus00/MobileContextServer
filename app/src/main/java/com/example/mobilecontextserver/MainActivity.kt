@@ -15,7 +15,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.mobilecontextserver.mcp.MCPClientService
 import com.example.mobilecontextserver.server.LocalHttpServer
+import com.example.mobilecontextserver.ui.ChatMessage
+import com.example.mobilecontextserver.ui.ChatScreen
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import java.io.*
 import java.net.HttpURLConnection
 import java.net.URL
@@ -30,6 +36,12 @@ class MainActivity : ComponentActivity() {
     val responseText = _responseText
     private var localServer: LocalHttpServer? = null
     private var localServerStarted = false
+    
+    // MCP 클라이언트 서비스
+    private val mcpClientService = MCPClientService()
+    
+    // 채팅 모드 상태
+    private val isChatMode = mutableStateOf(false)
 
     companion object {
         init {
@@ -56,6 +68,11 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             MaterialTheme {
+                // 채팅 모드 상태 변경 감시
+                LaunchedEffect(isChatMode.value) {
+                    Log.d("UI", "채팅 모드 변경됨: ${isChatMode.value}")
+                }
+                
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -67,6 +84,26 @@ class MainActivity : ComponentActivity() {
                             onServerSelected = { serverName ->
                                 selectedServer.value = serverName
                             }
+                        )
+                    } else if (isChatMode.value) {
+                        // 채팅 화면 표시
+                        val messages by mcpClientService.messages.collectAsState()
+                        val isConnected by mcpClientService.isConnected.collectAsState()
+                        val serverInfo by mcpClientService.serverInfo.collectAsState()
+                        
+                        ChatScreen(
+                            serverName = selectedServer.value!!,
+                            messages = messages,
+                            isConnected = isConnected,
+                            onSendMessage = { message -> 
+                                mcpClientService.sendMessage(message) 
+                            },
+                            onBack = {
+                                // 채팅 모드 종료
+                                mcpClientService.disconnect()
+                                isChatMode.value = false
+                            },
+                            serverInfo = serverInfo
                         )
                     } else {
                         // 선택된 서버의 제어 화면 표시
@@ -94,6 +131,35 @@ class MainActivity : ComponentActivity() {
                                     selectedServer.value = null
                                 } else {
                                     _responseText.value = "서버를 중지한 후 다른 서버를 선택해주세요."
+                                }
+                            },
+                            onStartChat = {
+                                // 채팅 모드 시작
+                                val serverPath = "${applicationContext.filesDir.absolutePath}/${selectedServer.value}/main.js"
+                                Log.d("MCP", "채팅 시작 - 서버 경로: $serverPath")
+                                
+                                // 파일 존재 확인
+                                val serverFile = File(serverPath)
+                                if (!serverFile.exists()) {
+                                    Log.e("MCP", "서버 파일이 존재하지 않음: $serverPath")
+                                    _responseText.value = "서버 파일이 존재하지 않습니다: $serverPath"
+                                    return@ServerScreen
+                                }
+                                
+                                // 서버가 이미 실행 중인지 확인
+                                if (!nodeStarted) {
+                                    // 서버가 실행되지 않은 경우 먼저 서버 시작
+                                    _responseText.value = "서버를 먼저 시작합니다..."
+                                    startNodeForChat(selectedServer.value!!)
+                                    
+                                    // 서버 시작 후 약간의 지연
+                                    lifecycleScope.launch {
+                                        delay(2000) // 2초 대기
+                                        startChatSession()
+                                    }
+                                } else {
+                                    // 서버가 이미 실행 중인 경우 바로 채팅 세션 시작
+                                    startChatSession()
                                 }
                             },
                             isNodeStarted = nodeStarted,
@@ -151,6 +217,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun handleError(message: String) {
+        Log.e("Error", message)
+        runOnUiThread {
+            _responseText.value = "오류 발생: $message\n"
+        }
+    }
+
     private fun copyAndVerifyNodeProject(serverName: String): String? {
         val nodeDir = "${applicationContext.filesDir.absolutePath}/$serverName"
         try {
@@ -204,29 +277,90 @@ class MainActivity : ComponentActivity() {
         val baseMessage = when (result) {
             0 -> {
                 Log.d("NodeJS", "Node.js 서버 시작 함수 반환 (결과 코드 0)")
-                // 중요: 결과 코드 0이 반드시 서버 성공을 의미하지 않음.
-                // node::Start는 스크립트 실행 후 반환될 수 있음. 실제 서버 상태는 로그 파일 확인 필요.
-                "Node.js 프로세스 시작됨 (결과 0). 서버 상태는 로그 파일을 확인하세요."
+                // 서버 시작 성공
+                nodeStarted = true
+                "Node.js 프로세스 시작됨 (결과 0). 서버가 준비되었습니다."
             }
-            -1 -> "Node.js JNI 메모리 할당 실패"
+            -1 -> {
+                nodeStarted = false
+                "Node.js JNI 메모리 할당 실패"
+            }
             // node::Start 가 다른 오류 코드를 반환할 수 있음 (문서 확인 필요)
-            else -> "Node.js 프로세스 시작 중 오류 발생 (코드: $result). 로그 파일을 확인하세요."
+            else -> {
+                nodeStarted = false
+                "Node.js 프로세스 시작 중 오류 발생 (코드: $result). 로그 파일을 확인하세요."
+            }
         }
 
         runOnUiThread {
             _responseText.value = "$baseMessage\n로그 파일: ${NODE_LOG_FILE}"
-            // nodeStarted 상태는 테스트 성공 여부나 로그 파일 내용 기반으로 더 정확하게 판단해야 할 수 있음
-            // 여기서는 결과 0이면 일단 시작된 것으로 간주
-            nodeStarted = (result == 0)
-            if(result != 0) nodeStarted = false // 오류 시 확실히 false
+            
+            // 서버가 성공적으로 시작된 경우 채팅 모드로 전환
+            if (result == 0) {
+                // 채팅 모드 전환
+                _responseText.value = "Node.js 서버 시작됨. 채팅 모드로 전환 중..."
+                
+                // 메시지 초기화
+                mcpClientService.clearMessages()
+                
+                // 약간의 지연 후 채팅 모드 전환
+                lifecycleScope.launch {
+                    delay(2000) // 2초 대기
+                    startChatSession()
+                }
+            }
         }
     }
 
-    private fun handleError(message: String) {
-        Log.e("NodeJS", message)
-        runOnUiThread {
-            _responseText.value = "$message\nNode.js 로그 파일(${NODE_LOG_FILE})을 확인해보세요."
-            nodeStarted = false // 오류 발생 시 false로 설정
+    /**
+     * 채팅을 위한 Node.js 서버 시작
+     * 내장된 Node.js 런타임을 사용하여 서버 스크립트 실행
+     */
+    private fun startNodeForChat(serverName: String) {
+        try {
+            val nodeDir = copyAndVerifyNodeProject(serverName)
+            if (nodeDir == null) {
+                Log.e("NodeJS", "$serverName 프로젝트 파일 복사 실패")
+                return
+            }
+
+            // 실행 권한 설정
+            setExecutablePermissions(nodeDir)
+
+            // Node.js 실행
+            Log.d("NodeJS", "채팅용 Node.js 서버 시작: $nodeDir/main.js")
+            
+            // 내장된 Node.js 런타임 사용
+            val result = startNodeWithArguments(arrayOf("node", "$nodeDir/main.js"))
+            Log.d("NodeJS", "Node.js 서버 시작 결과: $result")
+            
+            if (result != 0) {
+                Log.e("NodeJS", "Node.js 서버 시작 실패: $result")
+            } else {
+                nodeStarted = true
+            }
+        } catch (e: Exception) {
+            Log.e("NodeJS", "채팅용 Node.js 서버 시작 중 오류", e)
+        }
+    }
+
+    /**
+     * 채팅 세션 시작
+     * 서버가 이미 실행 중일 때 호출
+     */
+    private fun startChatSession() {
+        mcpClientService.clearMessages()
+        lifecycleScope.launch {
+            try {
+                Log.d("MCP", "MCP 클라이언트 연결 시도")
+                mcpClientService.connectToLocalServer(3000)
+                Log.d("MCP", "서버 연결 성공, 채팅 모드 활성화")
+                isChatMode.value = true
+                Log.d("MCP", "채팅 모드 상태: ${isChatMode.value}")
+            } catch (e: Exception) {
+                Log.e("MCP", "MCP 연결 실패", e)
+                _responseText.value = "MCP 서버 연결 실패: ${e.message}"
+            }
         }
     }
 
@@ -407,6 +541,7 @@ fun ServerScreen(
     onStopLocalServer: () -> Unit,
     onTestServer: () -> Unit,
     onChangeServer: () -> Unit,
+    onStartChat: () -> Unit,
     isNodeStarted: Boolean,
     isLocalServerStarted: Boolean
 ) {
@@ -438,6 +573,16 @@ fun ServerScreen(
             },
             style = MaterialTheme.typography.bodyLarge
         )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 채팅 시작 버튼
+        Button(
+            onClick = onStartChat,
+            enabled = true // nodeStarted 여부와 관계없이 항상 활성화
+        ) {
+            Text("채팅 시작")
+        }
 
         Spacer(modifier = Modifier.height(16.dp))
 
